@@ -6,7 +6,7 @@ survey.full <- read.delim("36164-0001-Data.tsv")
 
 # simplified with less variables
 # if you want to add a variable into simplified version, just add it to the list here
-survey <- select(survey.full, ORI9, AGENCYID, BJS_AGENCYNAME, CITY, ZIPCODE, POP2012, FTSWORN,
+survey <- select(survey.full, ORI9, STATECODE, AGENCYID, BJS_AGENCYNAME, CITY, ZIPCODE, POP2012, FTSWORN,
                  FTCIV, PTSWORN, PTCIV, PERS_PDSW_MFT:PERS_FTS_UNK, PERS_RESP_PATRL:PERS_RESP_OTHR,
                  PERS_SUP_CHF_M:PERS_SUP_SGT_F, PAY_SAL_EXC_MAX, PAY_SAL_SGT_MIN:PAY_SAL_OFCR_MAX,
                  PAY_INCT_EDU, PAY_INCT_LANG, PAY_INCT_SD, PAY_INCT_RINC, PAY_INCT_MRT, PAY_OUT, PAY_RST_NO,
