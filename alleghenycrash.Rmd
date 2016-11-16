@@ -1,0 +1,434 @@
+---
+title: "Allegheny Crash Study"
+author: "Lauren Renaud"
+date: "June 9, 2016"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+    theme: cerulean
+    highlight: tango
+---
+
+```{r global_options, include=FALSE}
+library(ggplot2)
+library(ISLR)
+library(MASS)
+library(klaR)
+library(knitr)
+library(boot)
+library(leaps)
+library(caret)
+library(glmnet)
+library(plyr)
+library(gam)
+library(gridExtra)
+library(partykit)
+library(rpart)
+library(rattle)
+library(randomForest)
+library(pROC)
+library(rpart.plot)
+library(reshape2)
+library(dplyr)
+
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+options (scipen=4)
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+```
+
+
+```{r import_data, cache=TRUE}
+crash15 <- read.csv("2014alcocrash.csv", header=TRUE, sep = ",")
+crash14 <- read.csv("2014alcocrash.csv", header=TRUE, sep = ",")
+crash13 <- read.csv("2013alcocrash.csv", header=TRUE, sep = ",")
+crash12 <- read.csv("2012alcocrash.csv", header=TRUE, sep = ",")
+crash11 <- read.csv("2011alcocrash.csv", header=TRUE, sep = ",")
+crash10 <- read.csv("2010alcocrash.csv", header=TRUE, sep = ",")
+crash09 <- read.csv("2009alcocrash.csv", header=TRUE, sep = ",")
+crash08 <- read.csv("2008alcocrash.csv", header=TRUE, sep = ",")
+crash07 <- read.csv("2007alcocrash.csv", header=TRUE, sep = ",")
+crash06 <- read.csv("2006alcocrash.csv", header=TRUE, sep = ",")
+crash05 <- read.csv("2005alcocrash.csv", header=TRUE, sep = ",")
+crash04 <- read.csv("2004alcocrash.csv", header=TRUE, sep = ",")
+
+
+crashes <- rbind(crash04, crash05, crash06, crash07, crash08, crash09, crash10, crash11, crash12, crash13, crash14, crash15)
+# write.table(crashes, "/Users/lauren/Documents/School/CMU/Box Sync/Clubs/SUDS/County Crash Data/crashes.csv", sep=",", row.names = FALSE)
+
+# crashes <- read.csv("/Users/lauren/Documents/School/CMU/Box Sync/Clubs/SUDS/County Crash Data/allto2015alcocrash.csv", sep=",", header=TRUE)
+
+### Features Engineering
+
+# quarter off day hours
+crashes <- transform(crashes,
+                  day.part = as.factor(mapvalues(HOUR_OF_DAY, c(0:23, 99),
+                                                 c(rep("night", 5), rep("morning", 5), rep("mid", 6), rep("evening", 4), rep("night", 4), "unknown"))))
+
+crashes <- transform(crashes, day.part = factor(day.part, levels = c("morning", "mid", "evening", "night", "unknown")))
+
+# create commute variables
+crashes <- transform(crashes,
+                  commute = as.factor(mapvalues(HOUR_OF_DAY, c(0:23, 99),
+                                                 c(rep("offpeak", 5), rep("commute", 5), rep("offpeak", 6), rep("commute", 4), rep("offpeak", 4), "unknown"))))
+
+
+# label months
+crashes <- transform(crashes,
+                      CRASH_MONTH = mapvalues(CRASH_MONTH, c(1:12),
+                                        c("Jan", "Feb", "Mar", "Apr", "May", "June",
+                                          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")))
+
+# order months correctly
+crashes <- transform(crashes, CRASH_MONTH = factor(CRASH_MONTH, levels = c("Jan", "Feb", "Mar", "Apr", "May",
+                                                                 "June", "Jul", "Aug", "Sep", "Oct",
+                                                                 "Nov", "Dec")))
+
+# day of week labels
+crashes <- transform(crashes, DAY_OF_WEEK = mapvalues(DAY_OF_WEEK, c(1:7),
+                                                      c("Sun", "Mon", "Tue", "Wed", "Thr", "Fri", "Sat")))
+
+# order days of the week correctly
+crashes <- transform(crashes, DAY_OF_WEEK = factor(DAY_OF_WEEK, levels = c("Sun", "Mon", "Tue", "Wed", "Thr", "Fri", "Sat")))
+
+# create season variables
+crashes <- transform(crashes,
+                      season = mapvalues(CRASH_MONTH, c("Jan", "Feb", "Mar", "Apr", "May",
+                                                                 "June",
+                                          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+                                        c(rep("winter", 2), rep("spring", 3), rep("summer", 3), 
+                                          rep("fall", 3), "winter")))
+
+# create weekend variables
+crashes <- transform(crashes,
+                  day.type = mapvalues(DAY_OF_WEEK, c("Sun", "Mon", "Tue", "Wed", "Thr", "Fri", "Sat"),
+                                        c("weekend", rep("weekday", 5), "weekend")))
+
+
+# After cleaning and creating new variables, subset bike and ped crashes
+
+bikesPGH <- subset(crashes, subset = BICYCLE==1)
+bikesPGH <- select(bikesPGH, CRASH_CRN, DISTRICT, CRASH_YEAR, HOUR_OF_DAY, PERSON_COUNT,
+                   VEHICLE_COUNT, 
+                   BICYCLE_COUNT, FATAL_COUNT, MOD_INJ_COUNT, MIN_INJ_COUNT,
+                   BICYCLE_DEATH_COUNT, 
+                   BICYCLE_MAJ_INJ_COUNT, PED_COUNT, PED_DEATH_COUNT, PED_MAJ_INJ_COUNT,
+                   LATITUDE, LONGITUDE, 
+                   DEC_LAT, DEC_LONG, ALCOHOL_RELATED, DRINKING_DRIVER, CELL_PHONE,
+                   CROSS_MEDIAN,
+                   SPEEDING_RELATED,AGGRESSIVE_DRIVING, FATIGUE_ASLEEP, NHTSA_AGG_DRIVING, 
+                   day.part, commute)
+
+#bikes1115 <- filter(bikes, CRASH_YEAR %in% c(2011:2015))
+
+#write.table(bikesPGH, "bikesPGHcrash.csv", row.names = F, col.names = T, sep=",")
+ped <- subset(crashes, subset = COLLISION_TYPE==8)
+
+# subset fatal or severe crashes
+crashes.major.fatal <- subset(crashes, subset = FATAL_OR_MAJ_INJ=="1")
+bikes.major <- subset(crashes.major.fatal, subset = BICYCLE==1)
+ped.major <- subset(crashes.major.fatal, subset = COLLISION_TYPE==8)
+
+
+# Population estimates from https://www.google.com/publicdata/explore?ds=kf7tgg1uo9ude_&ctype=l&strail=false&bcs=d&nselm=h&met_y=population&scale_y=lin&ind_y=false&rdim=county&idim=county:42003&ifdim=county:state:42000&hl=en&dl=en&ind=false&xMax=-73.14867066406248&xMin=-82.27830933593748&yMax=38.987950760624564&yMin=42.83844828764023&mapType=t&icfg&iconSize=0.5
+years <- c(2004:2014)
+county.pop <- c(1245900, 1232500, 1223200, 1219900, 1218200, 1218500, 1223800, 1227500, 1230400, 1233000, 1231300)
+county.pop.years <- cbind(years, county.pop)
+county.pop.years <- data.frame(county.pop.years)
+
+
+# table of crash frequency per 1000 residents
+# create freqency tables by year
+crash.freq <- table(crashes$CRASH_YEAR)
+crash.freq <- data.frame(crash.freq)
+bike.freq <- table(bikes$CRASH_YEAR)
+bike.freq <- data.frame(bike.freq)
+ped.freq <- table(ped$CRASH_YEAR)
+ped.freq <- data.frame(ped.freq)
+  # create column names
+colnames(crash.freq) <- c("years", "acc.count")
+colnames(bike.freq) <- c("years", "bike.count")
+colnames(ped.freq) <- c("years", "ped.count")
+  # join data to population
+crash.freq.pop <- join(crash.freq, county.pop.years, by="years")
+crash.freq.pop <- join(bike.freq, crash.freq.pop, by="years")
+crash.freq.pop <- join(ped.freq, crash.freq.pop, by="years")
+  # create frequency per 1000 residents columns
+crash.freq.pop$acc.per.1000 <- (crash.freq.pop$acc.count/crash.freq.pop$county.pop)*1000
+crash.freq.pop$bikeacc.per.1000 <- (crash.freq.pop$bike.count/crash.freq.pop$county.pop)*1000
+crash.freq.pop$pedacc.per.1000 <- (crash.freq.pop$ped.count/crash.freq.pop$county.pop)*1000
+crash.freq.pop$caracc.per.bikeacc <- (crash.freq.pop$acc.count/crash.freq.pop$bike.count)
+crash.freq.pop$caracc.per.pedacc <- (crash.freq.pop$acc.count/crash.freq.pop$ped.count)
+
+
+```
+
+
+### Project Introduction
+This project analyzes 10 years of crash data from Allegheny County, over 132,000 incidents, retrieved from the [WPRDC](https://data.wprdc.org/dataset/allegheny-county-crash-data).
+
+Crash data are information that derives from the information that comes from a reportable crash, generally meaning someone was injured or killed, or there was “damage to any vehicle to the extent that it cannot be driven under it’s own power in it’s customary manner without further damage or hazard to the vehicle”. Crash data does not include non-reportable crashesor near misses.
+
+### Methodology
+summary
+
+
+### Preliminary Exploration of the Data
+
+Overall:
+
+  - Crashes with at least one minor injury make up `r round((table(crashes$MINOR_INJURY)[2])/nrow(crashes)*100, 1)`% of incidents, including `r round(100-(table(crashes$MOD_INJ_COUNT)[1])/nrow(crashes)*100, 1)`% with at least moderate injuries and only `r round(100-(table(crashes$BELTED_MAJ_INJ_COUNT)[1])/nrow(crashes)*100, 1)`% with major injuries. Crashes with fatalities make up `r round(100-(table(crashes$FATAL_COUNT)[1])/nrow(crashes)*100, 1)`% of incidents.
+  - Drivers were drinking in `r round((table(crashes$DRINKING_DRIVER)[2])/nrow(crashes)*100, 1)`% of crashes.
+  - `r round((table(crashes$DRIVER_16YR)[2])/nrow(crashes)*100, 1)`% of crashes involved 16 year old drivers, `r round((table(crashes$DRIVER_17YR)[2])/nrow(crashes)*100, 1)`% of crashes involved 17 year old drivers
+  - `r round((table(crashes$DRIVER_65_74YR)[2])/nrow(crashes)*100, 1)`% of crashes involved drivers between ages 65 to 74 with `r round((table(crashes$DRIVER_75PLUS)[2])/nrow(crashes)*100, 1)`% of crashes with drivers aged 75 or older.
+  
+  
+Let's break down the crash counts for the years we have data, 2004 to 2014, and compare to the county population.
+
+#### Year to Year Comparisons
+
+```{r population_graphs}
+yearbreaks <- c(2004, 2006, 2008, 2010, 2012, 2014)
+
+g1 <- qplot(crashes$CRASH_YEAR, 
+      fill = I(cbPalette[3]),
+      xlab = "Year",
+      main = "All Crash Count by Year",
+      ylab = "All Crashes",
+      geom = "histogram",
+      binwidth=1,
+      col=I("white"),
+      xlim=c(2002.5,2016.5)
+      ) + 
+  scale_x_continuous(breaks = yearbreaks)
+
+pop.graph <- qplot(data=crash.freq.pop,
+            y=county.pop,
+            x=years,
+            xlab = "Year",
+            ylab = "Population",
+            main = "County Population"
+            ) + 
+  scale_y_continuous(limits = c(1100000, 1250000)) + 
+  scale_x_discrete(breaks = yearbreaks) +
+  geom_bar(stat="identity", fill = I(cbPalette[8]))
+
+grid.arrange(g1, pop.graph, ncol=2)
+```
+
+We see some variation in the number of crashes each year, but it does not appear to be correlated to the county's population. Let's break out bike and pedestrian crashes as well. Here we see a significant dip in vehicles hitting pedestrians in 2009, a dip in car-bike incidents in 2010 with some other peaks and valleys.
+
+```{r pedbike_graphs_years}
+g2 <- qplot(bikes$CRASH_YEAR, 
+      fill = I(cbPalette[7]),
+      xlab = "Year",
+      ylab = "Bike Crashes",
+      main = "Bike Crash Count by Year",
+      geom = "histogram",
+      binwidth=1,
+      col=I("white")
+      ) + scale_x_continuous(breaks = yearbreaks)
+
+g3 <- qplot(ped$CRASH_YEAR, 
+      fill = I(cbPalette[2]),
+      xlab = "Year",
+      ylab = "Pedestrian Crashes",
+      main = "Ped Crash Count by Year",
+      geom = "histogram",
+      binwidth=1,
+      col=I("white")
+      ) + scale_x_continuous(breaks = yearbreaks)
+
+grid.arrange(g2, g3, ncol=2)
+```
+
+Let's look at crash frequency per 1000 residents (note differing scales for each type).
+
+**Add in layered histogram? All three on one graph?**
+
+```{r frequency_graphs}
+g4 <- qplot(data=crash.freq.pop,
+            y=acc.per.1000,
+            x=years,
+            xlab = "Year",
+            ylab = "Crashes per 1000 Residents",
+            main = "All Crash Frequency"
+            ) +
+  scale_y_continuous(limits = c(0, 11)) +
+  scale_x_discrete(breaks = yearbreaks) +
+  geom_bar(stat="identity", fill = I(cbPalette[3]))
+
+
+g5 <- qplot(data=crash.freq.pop,
+            y=bikeacc.per.1000,
+            x=years,
+            xlab = "Year",
+            ylab = "Crashes per 1000 Residents",
+            main = "Car-Bike Frequency"
+            ) +
+  scale_y_continuous(limits = c(0, 0.125)) +
+  scale_x_discrete(breaks = yearbreaks) +
+  geom_bar(stat="identity", fill = I(cbPalette[7]))
+
+g6 <- qplot(data=crash.freq.pop,
+            y=pedacc.per.1000,
+            x=years,
+            xlab = "Year",
+            ylab = "Crashes per 1000 Residents",
+            main = "Car-Ped Frequency"
+            ) +
+  scale_y_continuous(limits = c(0, 0.45)) +
+  scale_x_discrete(breaks = yearbreaks) +
+  geom_bar(stat="identity", fill = I(cbPalette[2]))
+
+grid.arrange(g4, g5, g6, ncol=3)
+```
+
+Let's also look at the differences between "Fatality or Major Injury" crashes and other crashes, which make up `r round((table(crashes$FATAL_OR_MAJ_INJ)[2])/nrow(crashes)*100, 2)`% of incidents.
+
+```{r severe_days_of_week}
+
+b1 <- qplot(crashes$DAY_OF_WEEK, 
+      fill = I(cbPalette[4]),
+      xlab = "Day",
+      main = "All Reported")
+
+b2 <- qplot(crashes.major.fatal$DAY_OF_WEEK, 
+      fill = I(cbPalette[6]),
+      xlab = "Day",
+      main = "Severe & Fatal Only")
+
+b3 <- qplot(crashes$day.type, 
+      fill = I(cbPalette[4]),
+      main = "All Reported",
+      xlab = "Day Type")
+b4 <- qplot(crashes.major.fatal$day.type, 
+      fill = I(cbPalette[6]),
+      main = "Severe & Fatal Only",
+      xlab = "Day Type")
+
+grid.arrange(b1, b2, b3, b4, ncol=2)
+
+b5 <- qplot(crashes$day.part, 
+      fill = I(cbPalette[4]),
+      xlab = "Time of Day",
+      main = "All Reported")
+b6 <- qplot(crashes.major.fatal$day.part, 
+      fill = I(cbPalette[6]),
+      xlab = "Time of Day",
+      main = "Fatalities Only")
+
+b7 <- qplot(crashes$commute, 
+      fill = I(cbPalette[4]),
+      main = "All Reported",
+      xlab = "Commute")
+b8 <- qplot(crashes.major.fatal$commute, 
+      fill = I(cbPalette[6]),
+      main = "Fatalities Only",
+      xlab = "Commute")
+
+grid.arrange(b5, b6, b7, b8, ncol=2)
+```
+
+
+#### Month to Month and Seasonal Comparisons
+
+Breaking out by months, there appear to be more crashes in January and December than the rest of year, which might be because of winter weather conditions on the road.
+
+If we again break out crashes involving bicyclist and pedestrians, we see a clear trend that there more crashes involving bicycles in warmer months. This makes sense -- there are probably more riders. We don't necessarily need to normalized this by vehicle miles traveled, though, it tells us what time of year to anticipate more incidents.
+
+```{r pedbike_graphs_months}
+monthbreaks = c("Jan", "Mar", "May", "Jul", "Sep", "Nov")
+
+s1 <- qplot(crashes$CRASH_MONTH, 
+      fill = I(cbPalette[3]),
+      xlab = "Month",
+      main = "All Reported") + 
+  scale_x_discrete(breaks = monthbreaks)
+
+s2 <- qplot(bikes$CRASH_MONTH, 
+      fill = I(cbPalette[7]),
+      xlab = "Month",
+      main = "Car-Bike by Month") + 
+  scale_x_discrete(breaks = monthbreaks)
+
+s3 <- qplot(ped$CRASH_MONTH, 
+      fill = I(cbPalette[2]),
+      xlab = "Month",
+      main = "Car-Ped by Month") + 
+  scale_x_discrete(breaks = monthbreaks)
+
+grid.arrange(s1, s2, s3, ncol=3)
+```
+
+Again let's also look at the differences between "Fatality or Major Injury" crashes and other crashes.
+
+```{r severe_month}
+
+s4 <- qplot(crashes$CRASH_MONTH, 
+      fill = I(cbPalette[4]),
+      xlab = "Month",
+      main = "All Reported") + 
+  scale_x_discrete(breaks = monthbreaks)
+
+s5 <- qplot(crashes.major.fatal$CRASH_MONTH, 
+      fill = I(cbPalette[6]),
+      xlab = "Month",
+      main = "Severe & Fatal Only") + 
+  scale_x_discrete(breaks = monthbreaks)
+
+#grid.arrange(s4, s5, ncol=2)
+
+s6 <- qplot(bikes$CRASH_MONTH, 
+      fill = I(cbPalette[4]),
+      xlab = "Month",
+      main = "All Car-Bike") + 
+  scale_x_discrete(breaks = monthbreaks)
+
+s7 <- qplot(bikes.major$CRASH_MONTH, 
+      fill = I(cbPalette[6]),
+      xlab = "Month",
+      main = "Car-Bike Severe Fatal") + 
+  scale_x_discrete(breaks = monthbreaks)
+
+s8 <- qplot(ped$CRASH_MONTH, 
+      fill = I(cbPalette[4]),
+      xlab = "Month",
+      main = "All Car-Ped") + 
+  scale_x_discrete(breaks = monthbreaks)
+
+s9 <- qplot(ped.major$CRASH_MONTH, 
+      fill = I(cbPalette[6]),
+      xlab = "Month",
+      main = "Car-Ped Severe Fatal") + 
+  scale_x_discrete(breaks = monthbreaks)
+
+grid.arrange(s4, s5, s6, s7, s8, s9, ncol=2)
+```
+
+
+
+
+```{r cellphones}
+# table(crashes$CELL_PHONE, crashes$FATAL_OR_MAJ_INJ)
+table(crashes$DRIVER_17YR)
+
+```
+
+
+```{r pressure}
+# g2 <- qplot(road.fatal$day, 
+#       fill = I(cbPalette[3]),
+#       xlab = "Day",
+#       main = "Fatalities Only")
+# 
+# g3 <- qplot(road$day.type, 
+#       fill = I(cbPalette[7]),
+#       main = "All Reported")
+# g4 <- qplot(road.fatal$day.type, 
+#       fill = I(cbPalette[3]),
+#       main = "Fatalities Only")
+
+# grid.arrange(g1, g2, g3, g4, ncol=2)
+```
+
